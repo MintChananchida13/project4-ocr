@@ -150,39 +150,63 @@ export default function UploadZone() {
     setRois(rois.filter(roi => roi.id !== id));
   };
 
-  // 4. อัปเดตฟังก์ชันเพื่อส่ง Payload บันทึกลงฐานข้อมูล SQLite จริงผ่าน Prisma
-  const handleRunOCR = async () => {
+  // 4. บายพาส SQLite ยิงพิกัดและภาพ Base64 ตรงไปหาพอร์ต 8000 ของ Python FastAPI ของเรา
+const handleRunOCR = async () => {
     setIsLoading(true);
     try {
-      const response = await fetch('/api/ocr', {
+      console.log("🚀 ส่งข้อมูลภาพบิตแมปและอาเรย์พิกัด ไปหา Python AI Engine...");
+      
+      // ดึงขนาดจริงของรูปภาพต้นฉบับเพื่อมาหาอัตราส่วน (Ratio)
+      const imageElement = imageRef.current;
+      if (!imageElement) return;
+
+      const naturalWidth = imageElement.naturalWidth;   // ความกว้างจริงของไฟล์ภาพ
+      const naturalHeight = imageElement.naturalHeight; // ความสูงจริงของไฟล์ภาพ
+      const displayWidth = imageElement.clientWidth;    // ความกว้างที่แสดงบนจอ
+      const displayHeight = imageElement.clientHeight;  // ความสูงที่แสดงบนจอ
+
+      // หาค่า Scale Factor
+      const scaleX = naturalWidth / displayWidth;
+      const scaleY = naturalHeight / displayHeight;
+
+      const response = await fetch('http://localhost:8000/api/ai/process', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
+        body: JSON.stringify({
           image, 
-          rois,
-          documentName: "ตั๋วรถไฟไทยตัวอย่าง_UserUpload", // ตั้งชื่อเอกสารต้นทาง
-          userId: "mock-user-id-123" // แมปคู่กับรหัสไอดีผู้ใช้ในตาราง User
+          // คูณพิกัดหน้าจอด้วย Scale เพื่อแปลงเป็นพิกัดบนรูปภาพจริงก่อนส่งให้ Python
+          rois: rois.map(roi => ({
+            fieldName: roi.fieldName,
+            x: roi.x * scaleX,
+            y: roi.y * scaleY,
+            width: roi.width * scaleX,
+            height: roi.height * scaleY
+          }))
         }),
       });
-      const data = await response.json();
-      if (data.success) {
-        alert(`บันทึกข้อมูลลงฐานข้อมูลสำเร็จ! Request ID: ${data.requestId}`);
-        // ทำการสร้างผลลัพธ์จำลองโชว์ที่ตาราง Ground Truth เพื่อทดสอบ Workspace ต่อ
-        setOcrResults([
-          {
-            id: Date.now(),
-            fieldName: rois[0]?.fieldName || "Field_1",
-            bbox: [rois[0]?.x || 0, rois[0]?.y || 0, rois[0]?.width || 0, rois[0]?.height || 0],
-            extractedText: "28 พ.ย. 2563",
-            confidence: 0.96
-          }
-        ]);
-        setTemplateInfo("Invoice_Standard_Template");
+
+      const aiData = await response.json();
+
+      if (aiData.success) {
+        alert(`ฝั่ง Python AI ประมวลผลและหั่นภาพสำเร็จ!\nแม่แบบที่ตรวจจับ: ${aiData.matched_template}`);
+        
+        // รับค่าผลลัพธ์การจัดทำโมเดลตัวอักษรที่ Python แกะได้มาโยงเข้า Table
+        const mappedResults = aiData.extracted_data.map((item: any, index: number) => ({
+          id: index,
+          fieldName: item.fieldName,
+          bbox: [], 
+          extractedText: item.text, 
+          confidence: item.confidence
+        }));
+        
+        setOcrResults(mappedResults);
+        setTemplateInfo(aiData.matched_template);
       } else {
-        alert(data.error || "เกิดข้อผิดพลาดในการรัน OCR");
+        alert("เซิร์ฟเวอร์ AI ของ Python เกิดข้อผิดพลาดภายในโครงสร้าง");
       }
     } catch (err) {
-      alert("ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์ API ได้");
+      console.error(err);
+      alert("ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์ยิงข้อมูลตรงหา Python API พอร์ต 8000 ได้ (อย่าลืมเปิด uvicorn นะครับ)");
     } finally {
       setIsLoading(false);
     }
@@ -292,7 +316,7 @@ export default function UploadZone() {
             </div>
           </div>
 
-          {/* บล็อกล่างสุด: Ground Truth Editor */}
+          /* บล็อกล่างสุด: Ground Truth Editor */
           {ocrResults.length > 0 && (
             <div className="mt-8 bg-slate-50 p-6 rounded-xl border space-y-4">
               <div className="flex items-center justify-between border-b pb-3">
