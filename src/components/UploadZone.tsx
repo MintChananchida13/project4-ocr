@@ -1,137 +1,139 @@
 "use client";
 
 import React, { useState } from 'react';
-import { Upload, RefreshCw } from 'lucide-react';
-import AdjustZone from './AdjustZone';
-import WorkspaceZone from './WorkspaceZone';
-import { ROI } from '../types/ocr';
+import { Upload, Loader2 } from 'lucide-react';
 
-export default function UploadZone() {
-  // 🖼️ Original Raw Image (ภาพดิบที่เพิ่งอัปโหลด)
-  const [rawImage, setRawImage] = useState<string | null>(null);
-  
-  // 🖼️ Processed Image (ภาพที่ผ่านการ Crop/Rotate แล้ว และจะใช้แสดงในหน้า Workspace)
-  const [processedImage, setProcessedImage] = useState<string | null>(null);
+interface UploadZoneProps {
+  onUploadSuccess: (urls: string[]) => void;
+}
 
-  // ⚙️ Image Pre-processing States (แชร์ค่าระหว่างหน้า Adjust)
-  const [isConfirmed, setIsConfirmed] = useState<boolean>(false);
-  const [brightness, setBrightness] = useState<number>(100);
-  const [contrast, setContrast] = useState<number>(100);
-  const [rotation, setRotation] = useState<number>(0);
+export default function UploadZone({ onUploadSuccess }: UploadZoneProps) {
+  const [isProcessing, setIsProcessing] = useState<boolean>(false);
 
-  // 📏 Workspace States
-  const [rois, setRois] = useState<ROI[]>([]);
-  const [selectedId, setSelectedId] = useState<number | null>(null);
-
-  // 🖱️ รับไฟล์ภาพ
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onload = () => {
-        const dataUrl = reader.result as string;
-        setRawImage(dataUrl);
-        setProcessedImage(null); // เคลียร์ภาพที่เคย Process ไว้เก่า
-        setRois([]);
-        setSelectedId(null);
-        setIsConfirmed(false);
-        setRotation(0);
+  // 🔮 ฟังก์ชันโหลดสคริปต์ PDF.js จากภายนอกแบบ Pure Client-Side เพื่อหนีตัวยึด Chunk ของ Turbopack
+  const loadPdfEngine = (): Promise<any> => {
+    return new Promise((resolve, reject) => {
+      if ((window as any).pdfjsLib) {
+        resolve((window as any).pdfjsLib);
+        return;
+      }
+      const script = document.createElement('script');
+      // ล็อกเวอร์ชันผ่านคลังไฟล์ประมวลผลสากล
+      script.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+      script.onload = () => {
+        const pdfjs = (window as any).pdfjsLib;
+        pdfjs.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+        resolve(pdfjs);
       };
-      reader.readAsDataURL(file);
+      script.onerror = (err) => reject(err);
+      document.head.appendChild(script);
+    });
+  };
+
+  // 📄 ฟังก์ชันแกะหน้าเอกสาร PDF ออกมาเป็นภาพพิกเซลดิบ
+  const convertPdfToImages = async (file: File): Promise<string[]> => {
+    const pdfjsLib = await loadPdfEngine();
+    const arrayBuffer = await file.arrayBuffer();
+    
+    const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
+    const pdf = await loadingTask.promise;
+    const imageUrls: string[] = [];
+
+    for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+      const page = await pdf.getPage(pageNum);
+      const viewport = page.getViewport({ scale: 2.0 }); // ขยายสเกลเพื่อความคมชัดของข้อความภาษาไทย
+
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      if (!ctx) continue;
+
+      canvas.width = viewport.width;
+      canvas.height = viewport.height;
+
+      await page.render({
+        canvasContext: ctx,
+        viewport: viewport
+      }).promise;
+
+      imageUrls.push(canvas.toDataURL('image/jpeg', 0.95));
+    }
+    return imageUrls;
+  };
+
+  // 鼠标 ดักจับเหตุการณ์โยนหรือเลือกไฟล์ (ภาพหลายภาพ หรือไฟล์ PDF)
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+
+    setIsProcessing(true);
+    let accumulatedImages: string[] = [];
+
+    try {
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        
+        if (file.type === "application/pdf" || file.name.endsWith(".pdf")) {
+          const pdfImages = await convertPdfToImages(file);
+          accumulatedImages = [...accumulatedImages, ...pdfImages];
+        } else {
+          const base64 = await new Promise<string>((resolve) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result as string);
+            reader.readAsDataURL(file);
+          });
+          accumulatedImages.push(base64);
+        }
+      }
+
+      if (accumulatedImages.length > 0) {
+        onUploadSuccess(accumulatedImages);
+      }
+    } catch (error) {
+      alert("เกิดข้อผิดพลาดในการแปลงไฟล์เอกสาร");
+      console.error(error);
+    } finally {
+      setIsProcessing(false);
     }
   };
 
-  // 🔄🔥 ฟังก์ชันสำหรับเคลียร์พอร์ต เพื่อเปิดอัปโหลดไฟล์ใหม่กลางคัน
-  const handleClearAndUploadNew = () => {
-    setRawImage(null);
-    setProcessedImage(null);
-    setRois([]);
-    setSelectedId(null);
-    setIsConfirmed(false);
-    setRotation(0);
-    setBrightness(100);
-    setContrast(100);
-  };
-
-  // 🗑️ ฟังก์ชันลบกล่อง (ส่งต่อให้ลูก)
-  const deleteROI = (id: number) => {
-    setRois(rois.filter(roi => roi.id !== id));
-    if (selectedId === id) setSelectedId(null);
-  };
-
-  // ✂️🔥 หัวใจหลัก: ฟังก์ชันรับภาพที่ "ตัดและหมุนเสร็จแล้ว" จากลูกมาแสดงผล
-  const handleCompleteAdjustment = (finalImageDataUrl: string) => {
-    setProcessedImage(finalImageDataUrl);
-    setIsConfirmed(true); // สลับไปหน้า WorkspaceZone
-  };
-
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-800 p-4 font-sans select-none">
-      
-      {/* 💻 TOP MENU BAR */}
-      <div className="flex items-center justify-between border-b border-slate-200 pb-3 mb-4 px-2">
-        <div className="flex items-center gap-2">
-          <div className="w-3 h-3 rounded-full bg-blue-600 animate-pulse"></div>
-          <h1 className="text-sm font-bold tracking-wider text-slate-700 uppercase">Intelligent OCR Studio v12</h1>
-        </div>
+    <div className="w-full max-w-3xl mx-auto py-12 px-4 animate-fade-in">
+      <div className={`relative group border-2 border-dashed rounded-2xl p-12 text-center transition-all duration-300 shadow-sm min-h-[340px] flex flex-col items-center justify-center bg-white ${isProcessing ? 'border-indigo-300 bg-indigo-50/10' : 'border-slate-200 hover:border-indigo-500 hover:shadow-indigo-500/5'}`}>
         
-        {/* ดักเงื่อนไข: ถ้ามีรูปในระบบแล้ว จะแสดงสเตปปัจจุบันพร้อมปุ่มกดเปลี่ยนไฟล์ใหม่ */}
-        {rawImage && (
-          <div className="flex items-center gap-3">
-            {/* 🟢 ปุ่มอัจฉริยะ: กดเปลี่ยนไฟล์ใหม่ได้ตลอดกระบวนการ */}
-            <button
-              type="button"
-              onClick={handleClearAndUploadNew}
-              className="flex items-center gap-1.5 text-xs font-bold px-3 py-1.5 bg-white border border-slate-200 text-slate-600 rounded-lg shadow-sm hover:bg-red-50 hover:text-red-600 hover:border-red-200 transition-all active:scale-95 animate-fade-in"
-              title="Upload another document template"
-            >
-              <RefreshCw size={12} /> เปลี่ยนไฟล์ภาพใหม่
-            </button>
-            
-            <div className="text-xs font-mono font-bold px-3 py-1.5 bg-blue-50 text-blue-700 rounded-md">
-              {!isConfirmed ? "Step 1: ปรับแต่งและครอบตัด" : "Step 2: ลากกล่องคีย์ข้อมูล"}
-            </div>
+        {isProcessing ? (
+          <div className="flex flex-col items-center justify-center space-y-4 animate-fade-in">
+            <Loader2 className="h-10 w-10 text-indigo-600 animate-spin" />
+            <p className="text-xs font-bold text-slate-600">กำลังประมวลผลและสกัดหน้าเอกสาร...</p>
+            <p className="text-[10px] text-slate-400 font-mono">กำลังคุยกับ Vanilla Engine บนเบราว์เซอร์...</p>
           </div>
+        ) : (
+          <>
+            <div className="absolute inset-0 bg-gradient-to-b from-indigo-50/0 to-indigo-50/0 group-hover:to-indigo-50/20 opacity-0 group-hover:opacity-100 transition-all duration-300 pointer-events-none" />
+            <input 
+              type="file" 
+              accept="image/*,application/pdf" 
+              multiple 
+              className="absolute inset-0 opacity-0 cursor-pointer z-10" 
+              onChange={handleFileChange} 
+            />
+            <div className="relative mb-6 p-4 rounded-full bg-slate-50 border border-slate-100 text-slate-400 group-hover:text-indigo-600 group-hover:bg-indigo-50 group-hover:border-indigo-100 transition-all duration-300 group-hover:scale-110 shadow-sm">
+              <Upload className="h-8 w-8" strokeWidth={2} />
+            </div>
+            <div className="space-y-2 relative z-20">
+              <h3 className="text-sm font-bold text-slate-700 tracking-tight group-hover:text-indigo-600">
+                Import Document Templates / Multi-Files
+              </h3>
+              <p className="text-xs text-slate-400 font-medium max-w-sm mx-auto leading-relaxed">
+                ลากและวางไฟล์ หรือ <span className="text-indigo-600 font-semibold underline decoration-2 decoration-indigo-200">คลิกเพื่อเปิดไฟล์</span>
+              </p>
+            </div>
+            <div className="mt-8 px-3 py-1 rounded-md bg-slate-100 text-[10px] font-mono font-bold text-slate-400 uppercase tracking-wider group-hover:bg-indigo-50 group-hover:text-indigo-500 transition-colors">
+              Supports: PDF, JPG, PNG, WEBP
+            </div>
+          </>
         )}
-      </div>
 
-      {/* 🔮 ARCHITECTURE ROUTER CHANNEL (สลับหน้าอัจฉริยะ) */}
-      {!rawImage ? (
-        /* 🚪 สเตป 0: หน้าเปล่าเปิดรับไฟล์ */
-        <div className="max-w-xl mx-auto mt-20 border-4 border-dashed border-slate-200 rounded-2xl p-16 text-center hover:border-blue-500 bg-white transition-all relative group shadow-lg">
-          <input type="file" accept="image/*" className="absolute inset-0 opacity-0 cursor-pointer" onChange={handleFileChange} />
-          <Upload className="mx-auto h-12 w-12 text-slate-400 group-hover:text-blue-500 transition-colors" />
-          <p className="mt-4 text-sm text-slate-600 font-medium">Import Document Template Image</p>
-          <p className="text-[11px] text-slate-400 mt-1">รองรับเฉพาะไฟล์รูปภาพต้นฉบับเอกสารเทมเพลตเท่านั้น</p>
-        </div>
-      ) : !isConfirmed ? (
-        /* 📐 สเตป 1: หน้าปรับแต่งความเอียงและครอปตัด (AdjustZone) */
-        <AdjustZone 
-          previewUrl={rawImage}
-          rotation={rotation}
-          setRotation={setRotation}
-          brightness={brightness}
-          setBrightness={setBrightness}
-          contrast={contrast}
-          setContrast={setContrast}
-          onConfirm={handleCompleteAdjustment} 
-        />
-      ) : (
-        /* ✍️ สเตป 2: หน้ากระดานวาดกล่อง OCR (WorkspaceZone) */
-        <WorkspaceZone 
-          previewUrl={processedImage!} 
-          image={processedImage!}
-          brightness={brightness}
-          contrast={contrast}
-          rotation={0} // รีเซ็ตเป็น 0 เพราะภาพถูกวาดหั่นบิดตรงมาอย่างถาวรแล้ว
-          rois={rois}
-          setRois={setRois}
-          selectedId={selectedId}
-          setSelectedId={setSelectedId}
-          onBackToAdjust={() => setIsConfirmed(false)}
-          deleteROI={deleteROI}
-        />
-      )}
+      </div>
     </div>
   );
 }

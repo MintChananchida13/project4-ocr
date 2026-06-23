@@ -7,6 +7,7 @@ export interface ROI {
   height: number;
   text?: string;
   confidence?: number;
+  pageIndex?: number;
 }
 
 export interface OCRResult {
@@ -15,4 +16,5 @@ export interface OCRResult {
   bbox: number[];
   extractedText: string;
   confidence: number;
+  saved_path?: string;
 }
