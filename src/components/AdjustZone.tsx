@@ -17,7 +17,14 @@ interface PageConfig {
   perspectiveH: number;
   flipH: boolean;
   flipV: boolean;
-  cropBox: { x: number; y: number; width: number; height: number } | null;
+  cropBox: { 
+    x: number; 
+    y: number; 
+    width: number; 
+    height: number;
+    renderedWidth?: number;
+    renderedHeight?: number;
+  } | null;
   isCropActive: boolean;
   isCropped: boolean;
   croppedLocalUrl: string | null;
@@ -56,9 +63,23 @@ export default function AdjustZone({
   onBatchConfirm,
 }: AdjustZoneProps) {
   
-  const currentRawUrl = imagesList[currentIndex] || "";
-  const localImageRef = useRef<HTMLImageElement | null>(null);
+  // ✨ สเตตพิเศษ: ใช้ล็อกและจำ URL รูปภาพแรกสุดที่ component นี้เคยได้รับ (ห้ามใครเปลี่ยน)
+  const [originalBackupList, setOriginalBackupList] = useState<string[]>([]);
+
+  // ถ้าโหลดเข้ามาครั้งแรกสุด และ backup ยังว่าง ให้เซ็ตค่าจำรูปออริจินัลไว้เลย
+  useEffect(() => {
+    if (imagesList.length > 0 && originalBackupList.length === 0) {
+      setOriginalBackupList([...imagesList]);
+    }
+  }, [imagesList]);
+
+  // สลับมาดึงจากข้อมูล Backup ดั้งเดิมแทน imagesList โดยตรง เผื่อกรณีโดนเขียนทับไปแล้ว
+  const currentRawUrl = originalBackupList[currentIndex] || imagesList[currentIndex] || "";
+  
+  const rawImageRef = useRef<HTMLImageElement | null>(null);
+  const croppedImageRef = useRef<HTMLImageElement | null>(null);
   const [liveCropPreviewUrl, setLiveCropPreviewUrl] = useState<string | null>(null);
+  const [isProcessing, setIsProcessing] = useState<boolean>(false);
 
   const currentConfig = useMemo(() => {
     return pagesConfig[currentIndex] || { ...DEFAULT_CONFIG };
@@ -67,7 +88,7 @@ export default function AdjustZone({
   const { 
     rotation, brightness, contrast, sharpness, 
     perspectiveV, perspectiveH, flipH, flipV,
-    cropBox, isCropActive, isCropped 
+    cropBox, isCropActive, isCropped, croppedLocalUrl 
   } = currentConfig;
 
   const updateCurrentConfig = (fields: Partial<PageConfig>) => {
@@ -76,19 +97,15 @@ export default function AdjustZone({
       if (!updated[currentIndex]) {
         updated[currentIndex] = { ...DEFAULT_CONFIG, ...fields };
       } else {
-        updated[updated.length - 1] = updated[currentIndex]; // Safe fallback logic
         updated[currentIndex] = { ...updated[currentIndex], ...fields };
       }
       return updated;
     });
   };
 
-  /**
-   * ✂️ ฟังก์ชันตัดสับรูปภาพพรีวิวเฉพาะส่วน
-   * (ทำหน้าที่ดึงเฉพาะพิกัดภาพดิบ เพื่อให้ CSS จัดการเรื่องการแสดงผลฟิลเตอร์และทรานส์ฟอร์มแบบเรียลไทม์)
-   */
   const extractCropAreaUrl = (imgEl: HTMLImageElement, config: PageConfig): string | null => {
-    if (!config.cropBox) return null;
+    // 🛡️ กันรูปพัง: เช็คความสมบูรณ์ของ Element ภาพต้นทาง
+    if (!imgEl || !imgEl.complete || imgEl.naturalWidth === 0 || !config.cropBox) return null;
     
     const canvas = document.createElement('canvas');
     const ctx = canvas.getContext('2d');
@@ -96,8 +113,8 @@ export default function AdjustZone({
 
     const naturalWidth = imgEl.naturalWidth;
     const naturalHeight = imgEl.naturalHeight;
-    const renderedWidth = imgEl.clientWidth || 1;
-    const renderedHeight = imgEl.clientHeight || 1;
+    const renderedWidth = config.cropBox.renderedWidth ?? imgEl.clientWidth ?? 1;
+    const renderedHeight = config.cropBox.renderedHeight ?? imgEl.clientHeight ?? 1;
 
     const imgRatio = naturalWidth / naturalHeight;
     const containerRatio = renderedWidth / renderedHeight;
@@ -115,8 +132,8 @@ export default function AdjustZone({
       offsetX = (renderedWidth - displayedImgWidth) / 2;
     }
 
-    const scaleX = naturalWidth / displayedImgWidth;
-    const scaleY = naturalHeight / displayedImgHeight;
+    const scaleX = naturalWidth / (displayedImgWidth || 1);
+    const scaleY = naturalHeight / (displayedImgHeight || 1);
     const relativeX = config.cropBox.x - offsetX;
     const relativeY = config.cropBox.y - offsetY;
 
@@ -125,56 +142,84 @@ export default function AdjustZone({
     const realWidth = Math.min(naturalWidth, config.cropBox.width * scaleX);
     const realHeight = Math.min(naturalHeight, config.cropBox.height * scaleY);
 
+    if (realWidth <= 0 || realHeight <= 0) return null;
+
     canvas.width = realWidth;
     canvas.height = realHeight;
     ctx.drawImage(imgEl, realX, realY, realWidth, realHeight, 0, 0, realWidth, realHeight);
 
-    return canvas.toDataURL('image/jpeg', 0.9);
+    return canvas.toDataURL('image/jpeg', 0.95);
   };
 
-  // ดักจับการเปลี่ยนแปลงเพื่ออัปเดตภาพเจาะพรีวิวตัวใหม่
   useEffect(() => {
-    if (isCropped && localImageRef.current) {
-      const croppedUrl = extractCropAreaUrl(localImageRef.current, currentConfig);
-      setLiveCropPreviewUrl(croppedUrl);
+    // 🛡️ ป้องกัน Live Preview เสียหาย: เช็คความพร้อมของรูปภาพบน DOM ก่อนอัปเดตสเตต
+    if (isCropped && rawImageRef.current && rawImageRef.current.complete && rawImageRef.current.naturalWidth > 0) {
+      const croppedUrl = extractCropAreaUrl(rawImageRef.current, currentConfig);
+      if (croppedUrl && !croppedUrl.startsWith("data:;")) {
+        setLiveCropPreviewUrl(croppedUrl);
+      } else {
+        setLiveCropPreviewUrl(croppedLocalUrl);
+      }
     } else {
-      setLiveCropPreviewUrl(null);
+      setLiveCropPreviewUrl(isCropped ? croppedLocalUrl : null);
     }
-  }, [isCropped, cropBox, currentIndex, currentRawUrl]);
+  }, [isCropped, cropBox, currentIndex, currentRawUrl, croppedLocalUrl]);
 
-  /**
-   * 🛠️ Canvas ประมวลผลขั้นสุดท้ายสำหรับการกดเซฟบันทึกรวมไฟล์
-   */
-  const generateFinalCanvasUrl = (imgEl: HTMLImageElement, config: PageConfig): string => {
+  const processSingleImageCanvas = (imgEl: HTMLImageElement, config: PageConfig, baseIsCropped: boolean): string => {
+    // 🛡️ ป้องกันรูปค้าง/รูปดำ: ถ้ารูปยังโหลดไม่เสร็จหรือไม่มีมิติความกว้าง ให้คืนค่า src ดั้งเดิมทันที
+    if (!imgEl || !imgEl.complete || imgEl.naturalWidth === 0 || imgEl.naturalHeight === 0) {
+      return imgEl?.src || "";
+    }
+
     const naturalWidth = imgEl.naturalWidth;
     const naturalHeight = imgEl.naturalHeight;
 
-    let cropCanvas = document.createElement('canvas');
-    let targetX = 0, targetY = 0, targetWidth = naturalWidth, targetHeight = naturalHeight;
+    let sourceCanvas = document.createElement('canvas');
+    let targetWidth = naturalWidth;
+    let targetHeight = naturalHeight;
 
-    if (config.cropBox) {
-      const renderedWidth = imgEl.clientWidth || 500; 
-      const renderedHeight = imgEl.clientHeight || 500;
-      const imgRatio = naturalWidth / naturalHeight;
-      const containerRatio = renderedWidth / renderedHeight;
+    if (!baseIsCropped && config.cropBox) {
+      const renderedWidth = config.cropBox.renderedWidth ?? imgEl.clientWidth ?? 500;
+      const renderedHeight = config.cropBox.renderedHeight ?? imgEl.clientHeight ?? 500;
       
-      let displayedImgWidth = renderedWidth, displayedImgHeight = renderedHeight, offsetX = 0, offsetY = 0;
-      if (imgRatio > containerRatio) { displayedImgHeight = renderedWidth / imgRatio; offsetY = (renderedHeight - displayedImgHeight) / 2; } 
-      else { displayedImgWidth = renderedHeight * imgRatio; offsetX = (renderedWidth - displayedImgWidth) / 2; }
+      const safeRenderedWidth = renderedWidth <= 0 ? 500 : renderedWidth;
+      const safeRenderedHeight = renderedHeight <= 0 ? 500 : renderedHeight;
 
-      const scaleX = naturalWidth / displayedImgWidth;
-      const scaleY = naturalHeight / displayedImgHeight;
-      targetX = Math.max(0, (config.cropBox.x - offsetX) * scaleX);
-      targetY = Math.max(0, (config.cropBox.y - offsetY) * scaleY);
+      const imgRatio = naturalWidth / naturalHeight;
+      const containerRatio = safeRenderedWidth / safeRenderedHeight;
+      
+      let displayedImgWidth = safeRenderedWidth, displayedImgHeight = safeRenderedHeight, offsetX = 0, offsetY = 0;
+      if (imgRatio > containerRatio) { 
+        displayedImgHeight = safeRenderedWidth / imgRatio; 
+        offsetY = (safeRenderedHeight - displayedImgHeight) / 2; 
+      } else { 
+        displayedImgWidth = safeRenderedHeight * imgRatio; 
+        offsetX = (safeRenderedWidth - displayedImgWidth) / 2; 
+      }
+
+      const scaleX = naturalWidth / (displayedImgWidth || 1);
+      const scaleY = naturalHeight / (displayedImgHeight || 1);
+      
+      const targetX = Math.max(0, (config.cropBox.x - offsetX) * scaleX);
+      const targetY = Math.max(0, (config.cropBox.y - offsetY) * scaleY);
       targetWidth = Math.min(naturalWidth, config.cropBox.width * scaleX);
       targetHeight = Math.min(naturalHeight, config.cropBox.height * scaleY);
-    }
 
-    cropCanvas.width = targetWidth;
-    cropCanvas.height = targetHeight;
-    const cropCtx = cropCanvas.getContext('2d');
-    if (cropCtx) {
-      cropCtx.drawImage(imgEl, targetX, targetY, targetWidth, targetHeight, 0, 0, targetWidth, targetHeight);
+      if (targetWidth <= 0 || targetHeight <= 0) return imgEl.src;
+
+      sourceCanvas.width = targetWidth;
+      sourceCanvas.height = targetHeight;
+      const sCtx = sourceCanvas.getContext('2d');
+      if (sCtx) {
+        sCtx.drawImage(imgEl, targetX, targetY, targetWidth, targetHeight, 0, 0, targetWidth, targetHeight);
+      }
+    } else {
+      sourceCanvas.width = naturalWidth;
+      sourceCanvas.height = naturalHeight;
+      const sCtx = sourceCanvas.getContext('2d');
+      if (sCtx) {
+        sCtx.drawImage(imgEl, 0, 0);
+      }
     }
 
     const finalCanvas = document.createElement('canvas');
@@ -182,46 +227,138 @@ export default function AdjustZone({
     if (!ctx) return imgEl.src;
 
     const angleRad = (config.rotation * Math.PI) / 180;
+    const dV = Math.tan((config.perspectiveV * Math.PI) / 180);
+    const dH = Math.tan((config.perspectiveH * Math.PI) / 180);
+
     const absCos = Math.abs(Math.cos(angleRad));
     const absSin = Math.abs(Math.sin(angleRad));
-    let finalWidth = targetWidth * absCos + targetHeight * absSin;
-    let finalHeight = targetWidth * absSin + targetHeight * absCos;
+    
+    let baseWidth = targetWidth * absCos + targetHeight * absSin;
+    let baseHeight = targetWidth * absSin + targetHeight * absCos;
+    
+    let finalWidth = baseWidth + Math.abs(baseHeight * dH);
+    let finalHeight = baseHeight + Math.abs(baseWidth * dV);
+
+    if (finalWidth <= 0 || finalHeight <= 0) return imgEl.src;
 
     finalCanvas.width = finalWidth;
     finalCanvas.height = finalHeight;
 
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, finalWidth, finalHeight);
+
     ctx.translate(finalWidth / 2, finalHeight / 2);
     ctx.scale(config.flipH ? -1 : 1, config.flipV ? -1 : 1);
     ctx.rotate(angleRad);
-
-    const dV = Math.tan((config.perspectiveV * Math.PI) / 180);
-    const dH = Math.tan((config.perspectiveH * Math.PI) / 180);
     ctx.transform(1, dV, dH, 1, 0, 0);
 
-    // ย้ายการทำฟิลเตอร์แสง/คมชัดมาแอปพลายที่ Canvas สุดท้ายด้วย
     ctx.filter = `brightness(${config.brightness}%) contrast(${config.contrast + config.sharpness}%)`;
-    ctx.drawImage(cropCanvas, -targetWidth / 2, -targetHeight / 2);
+    ctx.drawImage(sourceCanvas, -targetWidth / 2, -targetHeight / 2);
 
     return finalCanvas.toDataURL('image/jpeg', 0.95);
   };
 
-  const handleConfirmAll = () => {
-    const imgEl = localImageRef.current;
-    if (!imgEl) return;
+  // ✨ ฟังก์ชันสลับหน้าอัจฉริยะ: เรนเดอร์และเซฟงานหน้าปัจจุบันลงหน่วยความจำแยกหน้าก่อนเปิดหน้าถัดไป
+  const handleSafeIndexChange = async (nextIndex: number) => {
+    if (isProcessing) return;
+    setIsProcessing(true);
 
-    const finalProcessedImages = imagesList.map((url, idx) => {
-      const config = pagesConfig[idx];
-      if (!config) return url;
-      if (idx !== currentIndex) return url; 
-      return generateFinalCanvasUrl(imgEl, config);
+    try {
+      const activeImageElement = isCropped ? croppedImageRef.current : rawImageRef.current;
+      
+      // 🛡️ เช็คสถานะภาพบน DOM ก่อนการเซฟลงประวัติเพื่อบล็อกการสร้างรูปภาพดำเปล่า ๆ
+      if (activeImageElement && activeImageElement.complete && activeImageElement.naturalWidth > 0) {
+        const config = pagesConfig[currentIndex] || { ...DEFAULT_CONFIG };
+        const resultUrl = processSingleImageCanvas(activeImageElement, config, isCropped);
+        
+        if (resultUrl && !resultUrl.startsWith("data:;")) {
+          setPagesConfig(prev => {
+            const updated = [...prev];
+            if (!updated[currentIndex]) updated[currentIndex] = { ...DEFAULT_CONFIG };
+            updated[currentIndex] = { 
+              ...updated[currentIndex], 
+              croppedLocalUrl: resultUrl 
+            };
+            return updated;
+          });
+        }
+      }
+    } catch (err) {
+      console.error("Error auto-saving page changes:", err);
+    } finally {
+      setIsProcessing(false);
+      onIndexChange(nextIndex); // เปลี่ยนหน้า
+    }
+  };
+
+  // 🚀 รวบรวมภาพตกแต่งสมบูรณ์ของทุกหน้าแยกอิสระ ส่งขึ้นสู่หน้าประมวลผลกล่องข้อความใหญ่
+  const handleConfirmAll = async () => {
+    if (isProcessing) return;
+    setIsProcessing(true);
+
+    try {
+      let finalProcessedImages = originalBackupList.length > 0 ? [...originalBackupList] : [...imagesList];
+      const activeImageElement = isCropped ? croppedImageRef.current : rawImageRef.current;
+
+      let currentResultUrl = "";
+      if (activeImageElement && activeImageElement.complete && activeImageElement.naturalWidth > 0) {
+        const config = pagesConfig[currentIndex] || { ...DEFAULT_CONFIG };
+        currentResultUrl = processSingleImageCanvas(activeImageElement, config, isCropped);
+      }
+
+      // วนรอบตรวจสอบเพื่อรวบรวมข้อมูล Base64 ที่ดีที่สุดของแต่ละหน้าส่งออก
+      const allPagesFinalArray = finalProcessedImages.map((rawUrl, idx) => {
+        if (idx === currentIndex && currentResultUrl && !currentResultUrl.startsWith("data:;")) {
+          return currentResultUrl;
+        }
+        return pagesConfig[idx]?.croppedLocalUrl || rawUrl;
+      });
+
+      onBatchConfirm(allPagesFinalArray);
+
+    } catch (error) {
+      console.error("Error processing final images:", error);
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const handleResetToDefault = () => {
+    setLiveCropPreviewUrl(null);
+    
+    updateCurrentConfig({ 
+      ...DEFAULT_CONFIG,
+      isCropped: false,
+      isCropActive: false,
+      croppedLocalUrl: null,
+      cropBox: null
     });
 
-    onBatchConfirm(finalProcessedImages);
+    setPagesConfig(prev => {
+      const updated = [...prev];
+      if (updated[currentIndex]) {
+        updated[currentIndex] = {
+          ...DEFAULT_CONFIG,
+          croppedLocalUrl: null
+        };
+      }
+      return updated;
+    });
   };
 
   const handleInstantLocalCrop = () => {
-    if (cropBox) {
-      updateCurrentConfig({ isCropped: true, isCropActive: false });
+    if (cropBox && rawImageRef.current && rawImageRef.current.complete && rawImageRef.current.naturalWidth > 0) {
+      const croppedUrl = extractCropAreaUrl(rawImageRef.current, currentConfig);
+      updateCurrentConfig({ 
+        isCropped: true, 
+        isCropActive: false,
+        croppedLocalUrl: croppedUrl,
+        cropBox: {
+          ...cropBox,
+          renderedWidth: rawImageRef.current.clientWidth,
+          renderedHeight: rawImageRef.current.clientHeight
+        }
+      });
     }
   };
 
@@ -229,13 +366,8 @@ export default function AdjustZone({
     updateCurrentConfig({ isCropped: false, isCropActive: true });
   };
 
-  const handleResetToDefault = () => {
-    setLiveCropPreviewUrl(null);
-    updateCurrentConfig({ ...DEFAULT_CONFIG });
-  };
-
   const handleActivateCrop = () => {
-    const imgEl = localImageRef.current;
+    const imgEl = rawImageRef.current;
     if (!imgEl) return;
     
     if (cropBox) {
@@ -248,7 +380,14 @@ export default function AdjustZone({
     updateCurrentConfig({
       isCropActive: true,
       isCropped: false,
-      cropBox: { x: (imgEl.clientWidth - w) / 2, y: (imgEl.clientHeight - h) / 2, width: w, height: h }
+      cropBox: { 
+        x: (imgEl.clientWidth - w) / 2, 
+        y: (imgEl.clientHeight - h) / 2, 
+        width: w, 
+        height: h,
+        renderedWidth: imgEl.clientWidth,
+        renderedHeight: imgEl.clientHeight
+      }
     });
   };
 
@@ -259,25 +398,24 @@ export default function AdjustZone({
     updateCurrentConfig({ [key]: num });
   };
 
-  const handleStyle = {
+  const handleHandleStyle = {
     width: "10px", height: "10px", background: "#ffffff",
     border: "2px solid #0052cc", borderRadius: "50%",
     boxShadow: "0 1px 3px rgba(0,0,0,0.15)",
   };
 
-  // ✨ สร้าง CSS Style สำหรับจัดการภาพพรีวิวกลางจอ ทั้ง Transforms และ แสง/คมชัด (Filter)
   const dynamicPreviewStyle = useMemo(() => {
     let transforms = [];
     if (flipH) transforms.push("scaleX(-1)");
     if (flipV) transforms.push("scaleY(-1)");
     if (rotation !== 0) transforms.push(`rotate(${rotation}deg)`);
-    if (perspectiveV !== 0) transforms.push(`rotateX(${perspectiveV}deg)`);
-    if (perspectiveH !== 0) transforms.push(`rotateY(${perspectiveH}deg)`);
+    
+    if (perspectiveH !== 0) transforms.push(`skewX(${perspectiveH}deg)`);
+    if (perspectiveV !== 0) transforms.push(`skewY(${perspectiveV}deg)`);
 
     return {
       transform: transforms.join(" "),
       transformOrigin: "center center",
-      // ผูก CSS Filter ตรงนี้ เพื่อให้แสดงผลลัพธ์ทั้งก่อนครอบตัดและหลังครอบตัดทันที
       filter: `brightness(${brightness}%) contrast(${contrast + sharpness}%)`,
       transition: "transform 0.15s ease-out, filter 0.1s ease"
     };
@@ -293,25 +431,22 @@ export default function AdjustZone({
       </div>
 
       <div className="grid grid-cols-12 gap-6 items-stretch">
-        {/* 🎨 LEFT PREVIEW CANVAS */}
         <div className="col-span-12 lg:col-span-8 flex flex-col gap-4">
-          <div className="bg-[#edf2f7] border border-slate-200 rounded-xl flex items-center justify-center h-[540px] overflow-hidden shadow-inner relative p-4 [perspective:1000px]">
+          <div className="bg-[#edf2f7] border border-slate-200 rounded-xl flex items-center justify-center h-[540px] overflow-hidden shadow-inner relative p-4">
             
             <div className="relative flex items-center justify-center w-full h-full">
-              
               {isCropped && liveCropPreviewUrl ? (
-                /* Mode 1: ครอบตัดเสร็จแล้ว -> สวมใส่ dynamicPreviewStyle เพื่อรับทั้งการบิดรูปและ แสง คอนทราสต์ คมชัด */
                 <img 
+                  ref={croppedImageRef} 
                   src={liveCropPreviewUrl} 
                   alt="Cropped Sub-Region Preview" 
                   className="max-h-[460px] max-w-full w-auto h-auto block border border-slate-300 shadow-2xl bg-white rounded-lg select-none object-contain"
-                  style={dynamicPreviewStyle}
+                  style={dynamicPreviewStyle} 
                 />
               ) : (
-                /* Mode 2: กำลังเลือกขอบเขตหรือโหมดปกติ */
                 <div className="relative inline-block max-h-[440px] max-w-full">
                   <img 
-                    ref={localImageRef} 
+                    ref={rawImageRef} 
                     src={currentRawUrl} 
                     alt="Main Raw Input Preview" 
                     className="max-h-[440px] max-w-full block border border-slate-200 shadow-xl bg-white rounded-lg select-none object-contain" 
@@ -327,8 +462,8 @@ export default function AdjustZone({
                       bounds="parent"
                       className="border-2 border-dashed border-blue-500 bg-blue-500/5 z-40"
                       resizeHandleStyles={{
-                        topLeft: handleStyle, topRight: handleStyle, bottomLeft: handleStyle, bottomRight: handleStyle,
-                        top: handleStyle, right: handleStyle, bottom: handleStyle, left: handleStyle
+                        topLeft: handleHandleStyle, topRight: handleHandleStyle, bottomLeft: handleHandleStyle, bottomRight: handleHandleStyle,
+                        top: handleHandleStyle, right: handleHandleStyle, bottom: handleHandleStyle, left: handleHandleStyle
                       }}
                     >
                       <div className="w-full h-full relative">
@@ -347,13 +482,12 @@ export default function AdjustZone({
             )}
           </div>
 
-          {/* คลังเอกสารประมวลผล */}
           <div className="bg-[#edf2f7] border border-slate-200 rounded-xl p-3 flex flex-col sm:flex-row items-center justify-between gap-4">
             <div className="text-slate-600 text-xs font-semibold px-2 shrink-0">
               คลังเอกสารประมวลผล: <span className="text-blue-600 font-mono font-bold ml-1">{currentIndex + 1} / {imagesList.length} หน้า</span>
             </div>
             <div className="flex items-center gap-2 flex-1 justify-center w-full">
-              <button type="button" disabled={currentIndex === 0} onClick={() => onIndexChange(currentIndex - 1)} className="p-1.5 rounded-lg bg-white border border-slate-200 text-slate-500 hover:text-slate-700 disabled:opacity-25"><ChevronLeft size={16} /></button>
+              <button type="button" disabled={currentIndex === 0 || isProcessing} onClick={() => handleSafeIndexChange(currentIndex - 1)} className="p-1.5 rounded-lg bg-white border border-slate-200 text-slate-500 hover:text-slate-700 disabled:opacity-25"><ChevronLeft size={16} /></button>
               
               <div className="flex gap-2 overflow-x-auto max-w-xl py-1 no-scrollbar" style={{ msOverflowStyle: 'none', scrollbarWidth: 'none' }}>
                 <style>{`.no-scrollbar::-webkit-scrollbar { display: none; }`}</style>
@@ -361,25 +495,24 @@ export default function AdjustZone({
                   <button 
                     key={idx} 
                     type="button" 
-                    onClick={() => onIndexChange(idx)} 
+                    disabled={isProcessing}
+                    onClick={() => handleSafeIndexChange(idx)} 
                     className={`relative w-11 h-14 rounded border-2 overflow-hidden bg-white shrink-0 transition-all ${idx === currentIndex ? 'border-blue-500 ring-2 ring-blue-500/10 scale-105' : 'border-slate-200 opacity-50 hover:opacity-100'}`}
                   >
-                    <img src={url} className="w-full h-full object-cover" alt="" />
+                    <img src={pagesConfig[idx]?.croppedLocalUrl || originalBackupList[idx] || url} className="w-full h-full object-cover" alt="" />
                     <div className="absolute bottom-0 inset-x-0 bg-slate-900/80 text-[8px] text-slate-300 text-center font-mono py-0.5">#{idx + 1}</div>
                   </button>
                 ))}
               </div>
 
-              <button type="button" disabled={currentIndex === imagesList.length - 1} onClick={() => onIndexChange(currentIndex + 1)} className="p-1.5 rounded-lg bg-white border border-slate-200 text-slate-500 hover:text-slate-700"><ChevronRight size={16} /></button>
+              <button type="button" disabled={currentIndex === imagesList.length - 1 || isProcessing} onClick={() => handleSafeIndexChange(currentIndex + 1)} className="p-1.5 rounded-lg bg-white border border-slate-200 text-slate-500 hover:text-slate-700"><ChevronRight size={16} /></button>
             </div>
           </div>
         </div>
         
-        {/* 🎛️ RIGHT SIDEBAR PANEL */}
         <div className="col-span-12 lg:col-span-4 border border-slate-200 rounded-xl bg-slate-50 shadow-2xs flex flex-col overflow-hidden h-full min-h-[616px]">
           <div className="p-4 space-y-4 overflow-y-auto flex-1 pr-1.5 max-h-[530px]">
             
-            {/* กล่องที่ 1: Reset Options */}
             <div className="bg-white p-3.5 rounded-xl border border-rose-100 bg-rose-50/10 shadow-3xs space-y-2">
               <h3 className="text-xs font-bold text-rose-700 uppercase tracking-wider flex items-center gap-1.5">
                 <RotateCcw size={13} className="text-rose-600" /> Reset Options
@@ -388,13 +521,12 @@ export default function AdjustZone({
               <button 
                 type="button" 
                 onClick={handleResetToDefault} 
-                className="w-full py-2 bg-white border border-rose-200 text-rose-600 hover:bg-rose-50 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition-colors shadow-3xs"
+                className="w-full py-2 bg-white border border-rose-200 text-rose-600 hover:bg-rose-50 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition-colors shadow-3xs cursor-pointer"
               >
                 <RefreshCw size={13} /> ล้างค่าทั้งหมดกลับสู่รูปต้นฉบับ
               </button>
             </div>
 
-            {/* กล่องที่ 2: Crop Studio */}
             <div className="bg-white p-3.5 rounded-xl border border-slate-200 shadow-3xs space-y-2.5">
               <div className="flex justify-between items-center border-b border-slate-100 pb-2">
                 <h3 className="text-xs font-bold text-[#172b4d] uppercase tracking-wider flex items-center gap-1.5"><Crop size={13} className="text-blue-600" /> Crop Studio</h3>
@@ -415,7 +547,6 @@ export default function AdjustZone({
               </div>
             </div>
 
-            {/* กล่องที่ 3: Mirror Transforms */}
             <div className="bg-white p-3.5 rounded-xl border border-slate-200 shadow-3xs space-y-2">
               <h3 className="text-xs font-bold text-[#172b4d] uppercase tracking-wider flex items-center gap-1.5"><FlipHorizontal size={13} className="text-slate-500" /> Mirror Transforms</h3>
               <div className="grid grid-cols-2 gap-2">
@@ -428,7 +559,6 @@ export default function AdjustZone({
               </div>
             </div>
 
-            {/* กล่องที่ 4: Perspective Alignment */}
             <div className="bg-white p-3.5 rounded-xl border border-slate-200 shadow-3xs space-y-3.5">
               <div className="flex justify-between items-center border-b border-slate-100 pb-2">
                 <h3 className="text-xs font-bold text-[#172b4d] uppercase tracking-wider flex items-center gap-1.5"><Maximize2 size={13} className="text-slate-600" /> Perspective Alignment</h3>
@@ -458,7 +588,6 @@ export default function AdjustZone({
               </div>
             </div>
 
-            {/* กล่องที่ 5: Core Enhancement Filters */}
             {[
               { label: "Image Rotation", value: rotation, min: -180, max: 180, unit: "°", icon: <RotateCw size={12} className="text-slate-500" />, key: "rotation" as keyof PageConfig, resetVal: 0, step: 90 },
               { label: "Brightness Level", value: brightness, min: 50, max: 150, unit: "%", icon: <Sparkles size={12} className="text-slate-500" />, key: "brightness" as keyof PageConfig, resetVal: 100, step: 5 },
@@ -492,10 +621,19 @@ export default function AdjustZone({
           <div className="p-4 bg-white border-t border-slate-200 shadow-[0_-4px_12px_rgba(0,0,0,0.02)] mt-auto shrink-0">
             <button 
               type="button"
+              disabled={isProcessing}
               onClick={handleConfirmAll} 
-              className="w-full px-6 bg-[#0052cc] hover:bg-[#0043a4] text-white py-3.5 rounded-xl text-xs font-bold tracking-wider uppercase shadow-md active:scale-98 transition-all flex items-center justify-center gap-2"
+              className="w-full px-6 bg-[#0052cc] hover:bg-[#0043a4] disabled:bg-slate-400 text-white py-3.5 rounded-xl text-xs font-bold tracking-wider uppercase shadow-md active:scale-98 transition-all flex items-center justify-center gap-2"
             >
-              <Check size={14} /> Confirm Layout & Edit ROI
+              {isProcessing ? (
+                <>
+                  <RefreshCw size={14} className="animate-spin" /> Processing Images...
+                </>
+              ) : (
+                <>
+                  <Check size={14} /> Confirm Layout & Edit ROI
+                </>
+              )}
             </button>
           </div>
         </div>

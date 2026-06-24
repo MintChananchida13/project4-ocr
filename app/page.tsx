@@ -7,23 +7,28 @@ import WorkspaceZone from "../src/components/WorkspaceZone";
 import GroundTruthEditorZone from "../src/components/GroundTruthEditorZone";
 import { ROI, OCRResult } from "../src/types/ocr";
 
-// 📝 ปรับนิยาม Interface สำหรับข้อมูลสเตตการปรับแต่งรายหน้าให้รองรับผลลัพธ์การหั่นพรีวิวเรียลไทม์
 interface PageConfig {
   rotation: number;
   brightness: number;
   contrast: number;
-  sharpness: number;      // ✨ เพิ่มใหม่
-  perspectiveV: number;   // ✨ ปรับดึงบน-ล่าง (-20 ถึง 20)
-  perspectiveH: number;   // ✨ ปรับดึงซ้าย-ขวา (-20 ถึง 20)
-  flipH: boolean;         // ✨ กลับกระจกแนวนอน
-  flipV: boolean;         // ✨ กลับกระจกแนวตั้ง
-  cropBox: { x: number; y: number; width: number; height: number } | null;
+  sharpness: number;      
+  perspectiveV: number;   
+  perspectiveH: number;   
+  flipH: boolean;         
+  flipV: boolean;         
+  cropBox: { 
+    x: number; 
+    y: number; 
+    width: number; 
+    height: number;
+    renderedWidth?: number;
+    renderedHeight?: number;
+  } | null;
   isCropActive: boolean;
   isCropped: boolean;
   croppedLocalUrl: string | null;
 }
 
-// 🟢 โหลด UploadZone แบบ Dynamic ป้องกันปัญหาฝั่ง Server-Side
 const UploadZone = dynamic(() => import("../src/components/UploadZone"), {
   ssr: false,
   loading: () => (
@@ -34,34 +39,28 @@ const UploadZone = dynamic(() => import("../src/components/UploadZone"), {
 });
 
 export default function Home() {
-  // 🧭 State ควบคุมการสลับหน้าหลักของทั้งโปรเจกต์
   const [currentStep, setCurrentStep] = useState<"upload" | "adjust" | "studio" | "editor">("upload");
 
-  // 🖼️ คลังเก็บรูปภาพระบบอาร์เรย์ (ข้อมูลภาพต้นฉบับดั้งเดิม)
   const [imagesList, setImagesList] = useState<string[]>([]);
+  const [originalImagesList, setOriginalImagesList] = useState<string[]>([]);
+  
   const [currentIndex, setCurrentIndex] = useState<number>(0);
-
-  // ✨ State คอนฟิกการแต่งภาพแยกรายหน้า (เพิ่มฟิลด์ลงใน Type เพื่อให้เก็บประวัติการหั่นพรีวิวได้ครบทุกหน้า)
   const [pagesConfig, setPagesConfig] = useState<PageConfig[]>([]);
-
-  // 🖼️ State ประคองโครงสร้างระบบดั้งเดิม
   const [previewUrl, setPreviewUrl] = useState<string>("");
   const [image, setImage] = useState<string | null>(null);
 
-  // 📦 State เก็บพิกัดกล่องและผลลัพธ์ AI OCR
-  const [rois, setRois] = useState<ROI[]>([]);
+  const [rois, setRois] = useState<(ROI & { pageIndex?: number })[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
-  const [ocrResults, setOcrResults] = useState<OCRResult[]>([]);
+  const [ocrResults, setOcrResults] = useState<(OCRResult & { pageIndex?: number })[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(false);
 
-  // 🖱️ ฟังก์ชันเมื่ออัปโหลดคลังไฟล์สำเร็จ
   const handleUploadSuccess = (urls: string[]) => {
     setImagesList(urls);
+    setOriginalImagesList([...urls]); 
     setCurrentIndex(0);
     setPreviewUrl(urls[0]);
     setImage(urls[0]);
     
-    // ✨ อัปเดตโครงสร้างค่าเริ่มต้นของแต่ละหน้าให้สอดคล้องกับ AdjustZone ตัวใหม่
     const initialConfigs = urls.map(() => ({
       rotation: 0,
       brightness: 100,
@@ -81,9 +80,9 @@ export default function Home() {
     setCurrentStep("adjust");
   };
 
-  // 🔄 ฟังก์ชันล้างพอร์ตระบบเพื่อเริ่มต้นใหม่ทั้งหมด
   const handleClearAndUploadNew = () => {
     setImagesList([]);
+    setOriginalImagesList([]); 
     setCurrentIndex(0);
     setPagesConfig([]);
     setPreviewUrl("");
@@ -94,68 +93,115 @@ export default function Home() {
     setCurrentStep("upload");
   };
 
-  // 🟢 3. ฟังก์ชันปลายทางเมื่อกดคอนเฟิร์มใหญ่ใน Step Adjust หน้าจะเปลี่ยนเข้าสู่กระดานลากกล่อง
   const handleBatchConfirm = (finalProcessedImages: string[]) => {
-    // เซฟอาร์เรย์รูปภาพที่ผ่านการประมวลผลแต่ง/ตัดเสร็จสิ้นทับลงคลังหลักเพื่อนำไปรัน OCR ต่อ
     setImagesList(finalProcessedImages);
     setPreviewUrl(finalProcessedImages[currentIndex] || "");
     setImage(finalProcessedImages[currentIndex] || null);
-    
-    // ย้าย Step ทะลุมิติไปยัง ROI Studio
     setCurrentStep("studio");
   };
 
-  // 🤖 ฟังก์ชันสั่งรัน AI OCR อิงตามสเกลภาพหน้าปัจจุบัน
-  const handleRunOCR = async (scaleX: number, scaleY: number) => {
-    if (rois.length === 0) return;
+  // 🚀 ฟังก์ชันสั่ง Run OCR รวมทุกหน้า พร้อมระบบคำนวณสเกลภาพแบบ "แยกรายไฟล์" แม่นยำ 100%
+  const handleRunOCR = async () => {
+    if (rois.length === 0) {
+      alert("⚠️ ไม่พบกล่อง ROI ใดๆ ในคลัง กรุณาลากกล่องข้อความอย่างน้อย 1 กล่องก่อนกดรันประมวลผลครับ");
+      return;
+    }
+
     setIsLoading(true);
+    setOcrResults([]);
+
     try {
-      const response = await fetch("http://localhost:8000/api/ai/process", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          image: imagesList[currentIndex] || image,
-          rois: rois.map((roi) => ({
-            fieldName: roi.fieldName,
-            x: roi.x * scaleX,
-            y: roi.y * scaleY,
-            width: roi.width * scaleX,
-            height: roi.height * scaleY,
-          })),
-        }),
-      });
-      const aiData = await response.json();
-      if (aiData.success) {
-        setOcrResults(
-          aiData.extracted_data.map((resItem: any, idx: number) => ({
-            id: idx,
+      // ค้นหาดัชนีของหน้าทั้งหมดที่ถูกระบุไว้ในกล่อง ROI
+      const activePageIndexes = Array.from(
+        new Set(rois.map((roi) => (roi.pageIndex !== undefined ? Number(roi.pageIndex) : 0)))
+      );
+
+      const allPagePromises = activePageIndexes.map(async (pageIdx) => {
+        const pageRois = rois.filter(
+          (roi) => (roi.pageIndex !== undefined ? Number(roi.pageIndex) : 0) === pageIdx
+        );
+
+        if (pageRois.length === 0) return [];
+
+        // 🎯 [FIXED] โหลดขนาดจริงของรูปภาพในหน้านั้น ๆ ขึ้นมาเช็ค อัตราส่วนจะไม่เพี้ยนแม้รูปแต่ละหน้าจะกว้างยาวไม่เท่ากัน
+        const currentImgUrl = imagesList[pageIdx];
+        const dimensions = await new Promise<{ naturalWidth: number; naturalHeight: number }>((resolve) => {
+          const img = new Image();
+          img.onload = () => {
+            resolve({ naturalWidth: img.naturalWidth, naturalHeight: img.naturalHeight });
+          };
+          img.src = currentImgUrl;
+        });
+
+        // ขนาดกล่องจำลองมาตรฐานบน Canvas Workspace ของเราตั้งค่าคงที่ไว้ที่ความกว้าง 750px
+        const renderedWidth = 750; 
+        const renderedHeight = (dimensions.naturalHeight / dimensions.naturalWidth) * renderedWidth;
+
+        const scaleX = dimensions.naturalWidth / renderedWidth;
+        const scaleY = dimensions.naturalHeight / renderedHeight;
+
+        const response = await fetch("http://localhost:8000/api/ai/process", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            image: currentImgUrl,
+            rois: pageRois.map((roi) => ({
+              fieldName: roi.fieldName,
+              x: roi.x * scaleX,
+              y: roi.y * scaleY,
+              width: roi.width * scaleX,
+              height: roi.height * scaleY,
+            })),
+          }),
+        });
+
+        const aiData = await response.json();
+        if (aiData.success) {
+          return aiData.extracted_data.map((resItem: any, idx: number) => ({
+            id: Date.now() + pageIdx * 1000 + idx, 
             fieldName: resItem.fieldName,
             bbox: [],
             extractedText: resItem.text,
             confidence: resItem.confidence,
             saved_path: resItem.saved_path || "",
-          }))
-        );
+            pageIndex: pageIdx, 
+          }));
+        }
+        return [];
+      });
+
+      const resolvedResultsArray = await Promise.all(allPagePromises);
+      const combinedResults = resolvedResultsArray.flat();
+
+      if (combinedResults.length > 0) {
+        setOcrResults(combinedResults);
         setCurrentStep("editor");
+      } else {
+        alert("ไม่สามารถดึงข้อมูล OCR ได้ กรุณาตรวจสอบเอนจินระบบ");
       }
     } catch (err) {
-      alert("เกิดข้อผิดพลาดในการเชื่อมต่อเอนจิน AI");
+      alert("เกิดข้อผิดพลาดในการประมวลผลภาพรวมพร้อมกันทุกหน้า");
     } finally {
       setIsLoading(false);
     }
   };
 
-  // 💾 ฟังก์ชันส่งอนุมัติและบันทึกข้อมูลเข้าฐานข้อมูล
   const handleApproveAndSave = async () => {
+    const currentPageResults = ocrResults.filter(res => {
+      const resPage = res.pageIndex !== undefined ? Number(res.pageIndex) : 0;
+      return resPage === Number(currentIndex);
+    });
+
     const payload = {
       templateName: `Thai_Legal_Document_Page_${currentIndex + 1}`,
-      extracted_data: ocrResults.map((item) => ({
+      extracted_data: currentPageResults.map((item) => ({
         fieldName: item.fieldName || "",
         text: item.extractedText || "",
         confidence: item.confidence !== undefined ? item.confidence : 0.9,
         saved_path: item.saved_path || "",
       })),
     };
+
     try {
       await fetch("http://localhost:8000/api/templates/approve-and-save", {
         method: "POST",
@@ -172,14 +218,12 @@ export default function Home() {
     <main className="min-h-screen bg-slate-50 py-8 select-none">
       <div className="container mx-auto px-6 max-w-7xl space-y-5">
         
-        {/* 👑 หัวข้อระบบหลัก */}
         <div className="text-center py-2">
           <h1 className="text-2xl font-extrabold tracking-tight text-slate-900">
             Intelligent OCR Portal
           </h1>
         </div>
 
-        {/* 💻 แถบเมนู Status Bar */}
         <div className="bg-white border border-slate-200/80 rounded-2xl px-6 py-4 flex items-center justify-between shadow-sm">
           <div className="flex items-center gap-2.5">
             <div className="w-2.5 h-2.5 rounded-full bg-indigo-600 shadow-sm shadow-indigo-600/30 animate-pulse"></div>
@@ -205,15 +249,13 @@ export default function Home() {
           </div>
         </div>
 
-        {/* 🔀 ลอจิกการเรนเดอร์สลับหน้าแบบ Step-by-Step */}
-        
         {currentStep === "upload" && (
           <UploadZone onUploadSuccess={handleUploadSuccess} /> 
         )}
 
         {currentStep === "adjust" && (
           <AdjustZone
-            imagesList={imagesList}
+            imagesList={originalImagesList.length > 0 ? originalImagesList : imagesList}
             currentIndex={currentIndex}
             onIndexChange={(nextIdx) => setCurrentIndex(nextIdx)}
             pagesConfig={pagesConfig}
@@ -226,7 +268,6 @@ export default function Home() {
           <WorkspaceZone
             previewUrl={imagesList[currentIndex] || ""}
             image={imagesList[currentIndex] || null}
-            // 🛡️ ดัก Fallback ปลอดภัย เผื่อข้อมูลใน config หน้าปัจจุบันเป็น undefined
             brightness={pagesConfig[currentIndex]?.brightness ?? 100}
             contrast={pagesConfig[currentIndex]?.contrast ?? 100}
             rotation={pagesConfig[currentIndex]?.rotation ?? 0}
@@ -237,10 +278,13 @@ export default function Home() {
             onBackToAdjust={() => setCurrentStep("adjust")}
             deleteROI={(id) => setRois((p) => p.filter((roi) => roi.id !== id))}
             isLoading={isLoading}
-            onRunOCR={handleRunOCR}
+            onRunOCR={handleRunOCR} // 🎯 เรียกใช้งานฟังก์ชันหลักแบบไม่ต้องแนบพารามิเตอร์ผิดฝั่งมา
             currentIndex={currentIndex}
             imagesList={imagesList}
-            onIndexChange={(nextIdx) => setCurrentIndex(nextIdx)}
+            onIndexChange={(nextIdx) => {
+              setCurrentIndex(nextIdx);
+              setSelectedId(null); 
+            }}
           />
         )}
 

@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useRef, useEffect, useMemo } from 'react';
-import { Square, Trash2, Move, Hand, X, ArrowLeft, ZoomIn, ZoomOut, Maximize2 } from 'lucide-react';
+import { Square, Trash2, Move, Hand, X, ArrowLeft, ZoomIn, ZoomOut, Maximize2, Cpu } from 'lucide-react';
 import { Rnd } from "react-rnd";
 import { ROI } from '../types/ocr';
 
@@ -11,7 +11,7 @@ interface WorkspaceZoneProps {
   brightness: number;
   contrast: number;
   rotation: number;
-  rois: (ROI & { pageIndex?: number })[]; // 🛡️ ประกาศ Type ป้องกัน Error 2339
+  rois: (ROI & { pageIndex?: number })[]; 
   setRois: React.Dispatch<React.SetStateAction<(ROI & { pageIndex?: number })[]>>;
   selectedId: number | null;
   setSelectedId: React.Dispatch<React.SetStateAction<number | null>>;
@@ -20,15 +20,12 @@ interface WorkspaceZoneProps {
   isLoading: boolean;
   onRunOCR: (scaleX: number, scaleY: number) => void;
   currentIndex: number;
-  imagesList: string[]; // ✨ เพิ่มใหม่รองรับหลายหน้า
-  onIndexChange: (index: number) => void; // ✨ ฟังก์ชันสลับหน้า
+  imagesList: string[]; 
+  onIndexChange: (index: number) => void; 
 }
 
 export default function WorkspaceZone({
   previewUrl,
-  brightness,
-  contrast,
-  rotation,
   rois,
   setRois,
   selectedId,
@@ -48,7 +45,7 @@ export default function WorkspaceZone({
 
   // 🔍 สเตปการซูมมาตรฐาน
   const ZOOM_STEPS = [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0];
-  const [zoomIndex, setZoomIndex] = useState<number>(2); // เริ่มต้นที่ 1.0 (100%)
+  const [zoomIndex, setZoomIndex] = useState<number>(2); 
   const currentZoom = ZOOM_STEPS[zoomIndex];
 
   const [isPanning, setIsPanning] = useState(false);
@@ -58,14 +55,24 @@ export default function WorkspaceZone({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const viewportRef = useRef<HTMLDivElement | null>(null);
 
-  // 🔄 ล้างการเลือกกล่องเก่าเมื่อผู้ใช้สลับหน้ากระดาน
+  // 🔄 เคลียร์ไอดีที่เลือกเมื่อสลับหน้า
   useEffect(() => {
     setSelectedId(null);
   }, [currentIndex, setSelectedId]);
 
-  // 🛡️ กรองกรอบ ROI แสดงผลเฉพาะของหน้าปัจจุบันเท่านั้น
+  // ✨ บังคับให้ Workspace ใช้รูปที่โมดิฟายล่าสุด
+  useEffect(() => {
+    if (imageRef.current && previewUrl) {
+      imageRef.current.src = previewUrl;
+    }
+  }, [previewUrl, currentIndex]);
+
+  // 🛡️ กรองกรอบ ROI แสดงผลเฉพาะของหน้าปัจจุบัน
   const currentPageRois = useMemo(() => {
-    return rois.filter(roi => roi.pageIndex === currentIndex || roi.pageIndex === undefined);
+    return rois.filter(roi => {
+      const roiPage = roi.pageIndex !== undefined ? Number(roi.pageIndex) : 0;
+      return roiPage === Number(currentIndex);
+    });
   }, [rois, currentIndex]);
 
   const handleZoomIn = () => {
@@ -76,7 +83,6 @@ export default function WorkspaceZone({
     if (zoomIndex > 0) setZoomIndex(prev => prev - 1);
   };
 
-  // 🖱️ 1. เริ่มกดเมาส์วาดกล่องข้อมูล (MouseDown)
   const handleMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
     if (!containerRef.current || !viewportRef.current) return;
 
@@ -107,7 +113,6 @@ export default function WorkspaceZone({
     }
   };
 
-  // 🖱️ 2. ลากเมาส์ขยายกล่อง (MouseMove)
   const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
     if (isPanning && viewportRef.current) {
       const dx = e.clientX - panStart.clientX;
@@ -131,7 +136,6 @@ export default function WorkspaceZone({
     });
   };
 
-  // 🖱️ 3. ปล่อยเมาส์บันทึกข้อมูล
   const handleMouseUp = () => {
     if (isPanning) {
       setIsPanning(false);
@@ -149,7 +153,7 @@ export default function WorkspaceZone({
         y: dragBox.y,
         width: dragBox.w,
         height: dragBox.h,
-        pageIndex: currentIndex // 🔖 ระบุตรายางไว้ว่ากรอบนี้เกิดที่ภาพหน้าไหน
+        pageIndex: currentIndex 
       };
       setRois([...rois, newBox]);
       setSelectedId(newBox.id);
@@ -171,6 +175,14 @@ export default function WorkspaceZone({
     border: "1.5px solid #2563eb",
     borderRadius: "2px",
     boxShadow: "0 1px 2px rgba(0,0,0,0.2)"
+  };
+
+  // 🚀 ส่งสัญญาณหาความกว้าง/ยาวจริงของหน้าปัจจุบัน เพื่อนำสเกลไปกระจายรันทุกหน้า
+  const triggerOCRProcessing = () => {
+    if (!imageRef.current) return;
+    const scaleX = imageRef.current.naturalWidth / imageRef.current.clientWidth;
+    const scaleY = imageRef.current.naturalHeight / imageRef.current.clientHeight;
+    onRunOCR(scaleX, scaleY);
   };
 
   return (
@@ -262,8 +274,10 @@ export default function WorkspaceZone({
           <button 
             type="button"
             onClick={() => { 
-              // ✨ เคลียร์กล่องทิ้งเฉพาะหน้าปัจจุบัน ไม่ให้กระทบหน้าอื่น
-              setRois(prev => prev.filter(roi => roi.pageIndex !== currentIndex)); 
+              setRois(prev => prev.filter(roi => {
+                const roiPage = roi.pageIndex !== undefined ? Number(roi.pageIndex) : 0;
+                return roiPage !== Number(currentIndex);
+              })); 
               setSelectedId(null); 
             }}
             className="p-2.5 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors"
@@ -282,7 +296,7 @@ export default function WorkspaceZone({
             ref={containerRef}
             className={`relative inline-block ${selectedId ? 'cursor-default' : activeTool === 'box' ? 'cursor-crosshair select-none' : isPanning ? 'cursor-grabbing' : 'cursor-grab'}`} 
             style={{ 
-              transform: `rotate(${rotation}deg) scale(${currentZoom})`, 
+              transform: `scale(${currentZoom})`, 
               transformOrigin: "top left",
               transition: "transform 0.1s ease-out"
             }}
@@ -292,22 +306,23 @@ export default function WorkspaceZone({
             onMouseLeave={handleMouseUp}
           >
             <div className="relative w-[750px] h-auto bg-transparent">
-              <img 
-                ref={imageRef}
-                src={previewUrl} 
-                alt="Workspace" 
-                draggable="false" 
-                className="w-full h-auto block select-none pointer-events-none border border-slate-300 shadow-xl rounded bg-white"
-                style={{ filter: `brightness(${brightness}%) contrast(${contrast}%)` }}
-              />
-              
+              {previewUrl && (
+                <img 
+                  ref={imageRef}
+                  src={previewUrl} 
+                  alt="Workspace" 
+                  draggable="false" 
+                  className="w-full h-auto block select-none pointer-events-none border border-slate-300 shadow-xl rounded bg-white"
+                />
+              )}
+                  
               {isDrawing && dragBox && (
                 <div 
                   className="absolute border border-dashed border-red-500 bg-red-500/20 pointer-events-none z-50" 
                   style={{ left: dragBox.x, top: dragBox.y, width: dragBox.w, height: dragBox.h }} 
                 />
               )}
-              
+                          
               <div className="absolute inset-0 top-0 left-0 w-full h-full pointer-events-auto">
                 {currentPageRois.map((roi) => (
                   <Rnd
@@ -349,7 +364,7 @@ export default function WorkspaceZone({
 
           <div className="space-y-2 bg-slate-50 p-3 rounded-lg border border-slate-100">
             <h3 className="text-xs font-bold text-slate-500 tracking-wider uppercase">Active Fields ({currentPageRois.length})</h3>
-            <div className="space-y-1.5 max-h-[350px] overflow-y-auto pr-1">
+            <div className="space-y-1.5 max-h-[440px] overflow-y-auto pr-1">
               {currentPageRois.map((roi) => (
                 <div 
                   key={roi.id} 
@@ -377,76 +392,69 @@ export default function WorkspaceZone({
               ))}
             </div>
           </div>
-          
-          <button 
-            disabled={currentPageRois.length === 0 || isLoading} 
-            onClick={() => {
-              if (!imageRef.current) return;
-              const scaleX = imageRef.current.naturalWidth / imageRef.current.clientWidth;
-              const scaleY = imageRef.current.naturalHeight / imageRef.current.clientHeight;
-              onRunOCR(scaleX, scaleY);
-            }} 
-            className="w-full py-3 bg-blue-600 text-white hover:bg-blue-700 disabled:bg-slate-200 disabled:text-slate-400 rounded-lg text-xs font-bold uppercase tracking-wider transition-colors shadow-sm"
-          >
-            {isLoading ? "Running AI Engine..." : "Analyze OCR Channels"}
-          </button>
         </div>
       </div>
 
-      {/* 📄 🎠 FOOTER CAROUSEL: แถบคลังเอกสารประมวลผลตามที่ออกแบบไว้ใน Spec */}
-      <div className="w-full bg-slate-50 border border-slate-200/80 rounded-2xl px-6 py-4 flex items-center justify-between shadow-sm">
-        <div className="text-sm font-bold text-blue-600">
-          คลังเอกสารประมวลผล: <span className="text-slate-800">{currentIndex + 1} / {imagesList.length} หน้า</span>
-        </div>
-        
-        <div className="flex items-center gap-3">
-          {/* ปุ่มย้อนกลับ < */}
-          <button
-            type="button"
-            disabled={currentIndex === 0}
-            onClick={() => onIndexChange(currentIndex - 1)}
-            className="p-2 bg-white border border-slate-200 rounded-xl hover:bg-slate-50 transition-all text-slate-400 disabled:opacity-40 shadow-sm active:scale-95"
-          >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5L8.25 12l7.5-7.5" />
-            </svg>
-          </button>
-
-          {/* รายการภาพตัวอย่างแบบย่อ (Thumbnails) */}
-          <div className="flex items-center gap-2 overflow-x-auto max-w-[400px] py-1 px-0.5">
-            {imagesList.map((url, idx) => (
-              <button
-                key={idx}
-                type="button"
-                onClick={() => onIndexChange(idx)}
-                className={`relative w-12 h-16 rounded-lg overflow-hidden border-2 transition-all shrink-0 shadow-sm group ${
-                  currentIndex === idx 
-                    ? "border-blue-500 ring-2 ring-blue-100" 
-                    : "border-slate-200 hover:border-slate-300"
-                }`}
-              >
-                <img src={url} alt={`Page ${idx + 1}`} className="w-full h-full object-cover" />
-                <div className={`absolute bottom-0 left-0 right-0 py-0.5 text-[9px] font-bold text-center text-white ${
-                  currentIndex === idx ? "bg-blue-600/90" : "bg-slate-500/80 group-hover:bg-slate-600/90"
-                }`}>
-                  #{idx + 1}
-                </div>
-              </button>
-            ))}
+      {/* 📄 🎠 FOOTER CAROUSEL & GLOBAL ACTION BUTTON */}
+      <div className="w-full bg-slate-950 text-white rounded-2xl px-6 py-4 flex flex-col sm:flex-row items-center justify-between gap-4 shadow-xl">
+        <div className="flex items-center gap-4">
+          <div className="text-xs font-bold text-slate-400 uppercase tracking-wider">
+            คลังเอกสารประมวลผล: <span className="text-white text-sm ml-1">{currentIndex + 1} / {imagesList.length} หน้า</span>
           </div>
+          
+          <div className="flex items-center gap-2.5">
+            <button
+              type="button"
+              disabled={currentIndex === 0 || isLoading}
+              onClick={() => onIndexChange(currentIndex - 1)}
+              className="p-2 bg-slate-800 text-slate-300 rounded-xl hover:bg-slate-700 transition-all disabled:opacity-30 disabled:hover:bg-slate-800 shadow-sm active:scale-95"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5L8.25 12l7.5-7.5" />
+              </svg>
+            </button>
 
-          {/* ปุ่มถัดไป > */}
-          <button
-            type="button"
-            disabled={currentIndex === imagesList.length - 1}
-            onClick={() => onIndexChange(currentIndex + 1)}
-            className="p-2 bg-white border border-slate-200 rounded-xl hover:bg-slate-50 transition-all text-slate-400 disabled:opacity-40 shadow-sm active:scale-95"
-          >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
-            </svg>
-          </button>
+            {/* Thumbnails */}
+            <div className="flex items-center gap-2 overflow-x-auto max-w-[320px] py-0.5">
+              {imagesList.map((url, idx) => (
+                <button
+                  key={idx}
+                  type="button"
+                  disabled={isLoading}
+                  onClick={() => onIndexChange(idx)}
+                  className={`relative w-9 h-12 rounded-md overflow-hidden border transition-all shrink-0 shadow-md ${
+                    currentIndex === idx 
+                      ? "border-blue-500 ring-2 ring-blue-500/50" 
+                      : "border-slate-700 opacity-60 hover:opacity-100"
+                  }`}
+                >
+                  <img src={url} alt={`Page ${idx + 1}`} className="w-full h-full object-cover" />
+                </button>
+              ))}
+            </div>
+
+            <button
+              type="button"
+              disabled={currentIndex === imagesList.length - 1 || isLoading}
+              onClick={() => onIndexChange(currentIndex + 1)}
+              className="p-2 bg-slate-800 text-slate-300 rounded-xl hover:bg-slate-700 transition-all disabled:opacity-30 disabled:hover:bg-slate-800 shadow-sm active:scale-95"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
+              </svg>
+            </button>
+          </div>
         </div>
+
+        {/* 🌟 ปุ่มรัน OCR รวมทุกหน้าพร้อมกัน (ดึงกล่องทั้งหมดในแผงยิงตูมเดียว) */}
+        <button 
+          disabled={rois.length === 0 || isLoading} 
+          onClick={triggerOCRProcessing} 
+          className="w-full sm:w-auto px-6 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-800 disabled:text-slate-500 text-white rounded-xl text-xs font-black uppercase tracking-widest flex items-center justify-center gap-2 transition-all shadow-md shadow-blue-900/20 active:scale-98"
+        >
+          <Cpu size={14} className={isLoading ? "animate-spin text-blue-300" : "text-white"} />
+          {isLoading ? "Analyzing via AI Engine..." : "Run OCR on All Pages"}
+        </button>
       </div>
 
     </div>

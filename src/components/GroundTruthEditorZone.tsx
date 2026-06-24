@@ -1,14 +1,15 @@
 "use client";
 
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useMemo } from 'react';
 import { ArrowLeft, Save, ZoomIn, ZoomOut, Maximize2, CheckCircle, Edit3, ChevronLeft, ChevronRight } from 'lucide-react';
 import { ROI, OCRResult } from '../types/ocr';
 
+// ✨ เพิ่มสเปกให้ ROI และ OCRResult รองรับ pageIndex 
 interface GroundTruthEditorZoneProps {
   previewUrl: string;
-  rois: ROI[]; 
-  ocrResults: OCRResult[];
-  setOcrResults: React.Dispatch<React.SetStateAction<OCRResult[]>>;
+  rois: (ROI & { pageIndex?: number })[]; 
+  ocrResults: (OCRResult & { pageIndex?: number })[];
+  setOcrResults: React.Dispatch<React.SetStateAction<(OCRResult & { pageIndex?: number })[]>>;
   onBackToStudio: () => void;
   onApproveAndSave: () => Promise<void>;
   
@@ -35,23 +36,34 @@ export default function GroundTruthEditorZone({
   const currentZoom = ZOOM_STEPS[zoomIndex];
   const viewportRef = useRef<HTMLDivElement | null>(null);
 
+  // 🛡️ กรองกรอบ ROI ให้ดึงมาเฉพาะของหน้าปัจจุบัน
+  const currentPageRois = useMemo(() => {
+    return rois.filter(roi => roi.pageIndex === currentImageIndex);
+  }, [rois, currentImageIndex]);
+
+  // 🛡️ กรองผลลัพธ์ OCR ให้แสดงในตารางเฉพาะของหน้าปัจจุบันเท่านั้น
+  const currentPageOcrResults = useMemo(() => {
+    return ocrResults.filter(res => res.pageIndex === currentImageIndex);
+  }, [ocrResults, currentImageIndex]);
+
   const getRoiByFieldName = (fieldName: string) => {
-    return rois.find(roi => roi.fieldName === fieldName);
+    return currentPageRois.find(roi => roi.fieldName === fieldName);
   };
 
   const handlePrevImage = () => {
     if (onImageIndexChange && currentImageIndex > 0) {
       onImageIndexChange(currentImageIndex - 1);
+      setActiveFieldId(null); // เคลียร์ฟิลด์ที่เลือกเมื่อย้ายหน้า
     }
   };
 
   const handleNextImage = () => {
     if (onImageIndexChange && currentImageIndex < imageList.length - 1) {
       onImageIndexChange(currentImageIndex + 1);
+      setActiveFieldId(null); // เคลียร์ฟิลด์ที่เลือกเมื่อย้ายหน้า
     }
   };
 
-  // ฟังก์ชันปรับขนาดความสูงอัตโนมัติของ textarea ตามข้อความจริง
   const autoResizeTextarea = (e: React.FormEvent<HTMLTextAreaElement>) => {
     const target = e.currentTarget;
     target.style.height = "auto";
@@ -82,17 +94,16 @@ export default function GroundTruthEditorZone({
       {/* 💻 LAYOUT */}
       <div className="grid grid-cols-12 gap-6 h-[720px]">
         
-        {/* 🎨 👈 ฝั่งซ้าย: กระดานแสดงภาพเอกสาร (ปรับโครงสร้างกลับมาเป็นพิกเซลตรงล็อก แต่ฟิต Container) */}
+        {/* 🎨 👈 ฝั่งซ้าย: กระดานแสดงภาพเอกสาร */}
         <div className="col-span-5 bg-slate-900 border border-slate-800 rounded-xl overflow-hidden flex flex-col h-full relative shadow-md">
           <div 
             ref={viewportRef}
             className="w-full flex-1 overflow-auto p-4 flex items-start justify-start shadow-inner relative"
           >
-            {/* ✨ คืนชีพกล่อง Wrapper w-[750px] เพื่อรักษาความแม่นยำของกล่อง ROI แบบพิกเซลตรงล็อก 100% */}
             <div 
               className="relative inline-block"
               style={{ 
-                transform: `scale(${currentZoom * 0.6})`, // ✨ คูณ 0.6 พ่วงไว้ เพื่อบีบขนาดภาพเริ่มต้นจาก 750px ให้ย่อลงมาฟิตกรอบฝั่งซ้ายพอดี โดยพิกัดไม่เพี้ยน
+                transform: `scale(${currentZoom * 0.6})`, 
                 transformOrigin: "top left",
                 transition: "transform 0.1s ease-out"
               }}
@@ -104,9 +115,9 @@ export default function GroundTruthEditorZone({
                   className="w-full h-auto block select-none rounded bg-white border border-slate-700 shadow-sm"
                 />
 
-                {/* 🎯 เลเยอร์วาดกล่องไฮไลต์เชื่อมโยงข้อมูล (กลับมาใช้พิกเซลปกติ แม่นยำเท่าหน้า Studio แน่นอน) */}
+                {/* 🎯 เลเยอร์วาดกล่องไฮไลต์เชื่อมโยงข้อมูล (กรองเฉพาะหน้าปัจจุบัน) */}
                 <div className="absolute inset-0 top-0 left-0 w-full h-full pointer-events-none">
-                  {ocrResults.map((res) => {
+                  {currentPageOcrResults.map((res) => {
                     const matchedRoi = getRoiByFieldName(res.fieldName);
                     if (!matchedRoi) return null;
                     const isCurrentActive = activeFieldId === res.id;
@@ -147,7 +158,7 @@ export default function GroundTruthEditorZone({
             <button type="button" onClick={() => setZoomIndex(2)} className="p-1 hover:bg-slate-800 rounded text-slate-400"><Maximize2 size={10} /></button>
           </div>
 
-          {/* 🎞️ Carousel */}
+          {/* 🎞️ Carousel แถบเลือกหน้า */}
           <div className="bg-slate-950/60 backdrop-blur border-t border-slate-800 p-3 flex flex-col gap-2">
             <div className="flex items-center justify-between px-1">
               <span className="text-[10px] text-slate-400 font-medium">เอกสารทั้งหมด ({imageList.length} ไฟล์)</span>
@@ -173,7 +184,10 @@ export default function GroundTruthEditorZone({
                     <button
                       key={idx}
                       type="button"
-                      onClick={() => onImageIndexChange && onImageIndexChange(idx)}
+                      onClick={() => {
+                        if (onImageIndexChange) onImageIndexChange(idx);
+                        setActiveFieldId(null);
+                      }}
                       className={`relative flex-shrink-0 w-12 h-14 rounded border-2 transition-all overflow-hidden bg-white ${
                         isCurrent ? 'border-indigo-500 ring-2 ring-indigo-500/30 scale-105' : 'border-slate-700 opacity-60 hover:opacity-100'
                       }`}
@@ -199,7 +213,7 @@ export default function GroundTruthEditorZone({
           </div>
         </div>
 
-        {/* 📊 👉 ฝั่งขวา: ตารางข้อมูล */}
+        {/* 📊 👉 ฝั่งขวา: ตารางข้อมูล (กรองผลลัพธ์เฉพาะหน้าปัจจุบัน) */}
         <div className="col-span-7 bg-white border border-slate-200 rounded-xl shadow-sm flex flex-col h-full overflow-hidden">
           <div className="p-4 border-b flex justify-between items-center bg-slate-50/50">
             <button
@@ -224,7 +238,7 @@ export default function GroundTruthEditorZone({
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 bg-white">
-                {ocrResults.map((res) => {
+                {currentPageOcrResults.map((res) => {
                   const isSelected = activeFieldId === res.id;
                   return (
                     <tr 
@@ -285,6 +299,16 @@ export default function GroundTruthEditorZone({
                     </tr>
                   );
                 })}
+
+                {/* ℹ️ กรณีหน้านี้ไม่มีการสลักกล่อง OCR ไว้เลย */}
+                {currentPageOcrResults.length === 0 && (
+                  <tr>
+                    <td colSpan={3} className="text-center py-20 text-slate-400 font-medium bg-slate-50/50">
+                      ไม่พบกล่องข้อมูล OCR บนหน้าปัจจุบัน <br />
+                      <span className="text-[11px] font-normal text-slate-400">โปรดย้อนกลับไปลากกล่องดักจับที่ขั้นตอน ROI Studio</span>
+                    </td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>
