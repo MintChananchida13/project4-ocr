@@ -238,6 +238,9 @@ export default function Home() {
             deleteROI={(id) => setRois((p) => p.filter((roi) => roi.id !== id))}
             isLoading={isLoading}
             onRunOCR={handleRunOCR}
+            currentIndex={currentIndex}
+            imagesList={imagesList}
+            onIndexChange={(nextIdx) => setCurrentIndex(nextIdx)}
           />
         )}
 
